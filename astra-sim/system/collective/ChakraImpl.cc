@@ -62,7 +62,8 @@ void ChakraImpl::issue(shared_ptr<Chakra::ETFeederNode> node) {
         if (node->runtime() != 0ul) {
             // chakra runtimes are in microseconds and we should convert it into
             // nanoseconds.
-            runtime = node->runtime() * 1000;
+            // -> changed chakra to return nanoseconds
+            runtime = node->runtime(); // * 1000;
         }
         stream->owner->register_event(this, EventType::General, wlhd, runtime);
     }

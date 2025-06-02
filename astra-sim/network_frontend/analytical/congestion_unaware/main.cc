@@ -11,12 +11,15 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/congestion_unaware/Helper.h>
 #include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
 
+#include <iostream>
+
 using namespace AstraSim;
 using namespace Analytical;
 using namespace AstraSimAnalytical;
 using namespace AstraSimAnalyticalCongestionUnaware;
 using namespace NetworkAnalytical;
 using namespace NetworkAnalyticalCongestionUnaware;
+using namespace std;
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments
@@ -90,11 +93,64 @@ int main(int argc, char* argv[]) {
     // Initiate simulation
     for (int i = 0; i < npus_count; i++) {
         systems[i]->workload->fire();
+        // For debugging
+        // systems[i]->workload->et_feeder->printGraph();
     }
 
     // run simulation
-    while (!event_queue->finished()) {
+    // while (!event_queue->finished()) {
+    //     event_queue->proceed();
+    // }
+
+    bool exit = false;
+    while (!exit) {
+      if(!event_queue->finished()){
         event_queue->proceed();
+      }
+      else {
+        event_queue->add_current_time();
+      }
+      for (int i = 0; i < npus_count; i++) {
+        if(systems[i]->workload->is_finished){
+          systems[i]->workload->report();
+          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+          string new_filename;
+          getline(cin, new_filename);
+          if (new_filename.compare("pass") == 0){ // if pass
+            continue;
+          }
+          else if (new_filename.compare("exit") == 0){ // exit the simulator
+            exit = true;
+            break;
+          }
+          else{ // add new worklaod
+            // cout << "Adding " << new_filename << endl;
+            systems[i]->workload->addWorkload(new_filename);
+          }
+        }
+      }
+    }
+
+    // check non exited system
+    cout << "Checking Non-Exited Systems ..." << endl;
+    bool done = true;
+    for (int npu_id = 0; npu_id < npus_count; npu_id++) {
+
+      if (systems[npu_id]->workload->is_finished == false){
+        cout << "sys[" << npu_id << "] " << endl;
+        systems[npu_id]->workload->et_feeder->printGraph();
+        done = false;
+      }
+    }
+    if (done){
+      cout << "---------------------------" << endl;
+      cout << "All Request Has Been Exited" << endl;
+      cout << "---------------------------" << endl;
+    }
+    else{
+      cout << "---------------------------" << endl;
+      cout << "ERROR: Some Requests Remain" << endl;
+      cout << "---------------------------" << endl;
     }
 
     // terminate simulation

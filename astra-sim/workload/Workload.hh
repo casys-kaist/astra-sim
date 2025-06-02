@@ -40,6 +40,7 @@ class Workload : public Callable {
     void skip_invalid(std::shared_ptr<Chakra::ETFeederNode> node);
     void call(EventType event, CallData* data);
     void fire();
+    void addWorkload(std::string new_filename);
 
     // stats
     void report();
@@ -51,6 +52,8 @@ class Workload : public Callable {
     std::unordered_map<int, uint64_t> collective_comm_node_id_map;
     std::unordered_map<int, DataSet*> collective_comm_wrapper_map;
     bool is_finished;
+    uint32_t iteration;
+    std::string filename;
 };
 
 }  // namespace AstraSim

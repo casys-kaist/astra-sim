@@ -38,6 +38,12 @@ else()
     find_package(Protobuf REQUIRED)
 endif()
 
+# Many errors regarding protobuf, use these information in debugging
+message(STATUS "PROTOBUF_FROM_SOURCE = $ENV{PROTOBUF_FROM_SOURCE}")
+message(STATUS "Protobuf Include Dir: ${Protobuf_INCLUDE_DIRS}")
+message(STATUS "Protobuf Library: ${Protobuf_LIBRARIES}")
+message(STATUS "Protobuf Protoc Executable: ${Protobuf_PROTOC_EXECUTABLE}")
+
 # Files to compile
 file(GLOB srcs
     "${CMAKE_CURRENT_SOURCE_DIR}/astra-sim/system/*.cc"
@@ -74,9 +80,9 @@ target_include_directories(AstraSim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/extern/gr
 target_include_directories(AstraSim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/extern/helper/)
 
 # Same as above.
-if(DEFINED ENV{PROTOBUF_FROM_SOURCE} AND "$ENV{PROTOBUF_FROM_SOURCE}" STREQUAL "True")
-    target_include_directories(AstraSim PUBLIC ${Protobuf_INCLUDE_DIRS})
-endif()
+# if(DEFINED ENV{PROTOBUF_FROM_SOURCE} AND "$ENV{PROTOBUF_FROM_SOURCE}" STREQUAL "True")
+target_include_directories(AstraSim PUBLIC ${Protobuf_INCLUDE_DIRS})
+# endif()
 
 # Properties
 set_target_properties(AstraSim PROPERTIES COMPILE_WARNING_AS_ERROR OFF)

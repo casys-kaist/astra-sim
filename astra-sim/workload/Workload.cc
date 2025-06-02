@@ -46,10 +46,14 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     this->et_feeder = new ETFeeder(workload_filename);
     this->comm_group = nullptr;
     // TODO: parametrize the number of available hardware resources
+    // Workload is in each system(NPU)
+    // We can handle LOCAL memory with this hw_resource
     this->hw_resource = new HardwareResource(1);
     this->sys = sys;
     initialize_comm_group(comm_group_filename);
     this->is_finished = false;
+    this->iteration = 0;
+    this->filename = et_filename;
 }
 
 Workload::~Workload() {
@@ -174,7 +178,8 @@ void Workload::issue_replay(shared_ptr<Chakra::ETFeederNode> node) {
     if (node->runtime() != 0ul) {
         // chakra runtimes are in microseconds and we should convert it into
         // nanoseconds
-        runtime = node->runtime() * 1000;
+        // -> changed chakra to return nanoseconds
+        runtime = node->runtime(); // * 1000;
     }
     if (node->is_cpu_op()) {
         hw_resource->tics_cpu_ops += runtime;
@@ -192,6 +197,23 @@ void Workload::issue_remote_mem(shared_ptr<Chakra::ETFeederNode> node) {
     wlhd->workload = this;
     wlhd->node_id = node->id();
     sys->remote_mem->issue(node->tensor_size(), wlhd);
+
+    /* 
+        Now the node only stores one tensor_size for MEM_LOAD/STORE
+        Can get tensor size using
+        - node->tensor_size()
+        Loading/storing of the input/output is hardcoded in chakra
+        But, still can get input types from the node name
+        - node->name().find("INPUT") != string::npos
+        - node->name().find("OUTPUT") != string::npos
+        - node->name().find("WEIGHT") != string::npos
+        
+        For the tensor location use tensor_loc()
+        - node->tensor_loc() 
+        Current astra-sim is does not support various memory types
+        But still implemented in chakra as below for future
+        INVALID_MEMORY = 0, LOCAL_MEMORY = 1, REMOTE_MEMORY = 2, STORAGE_MEMORY = 3
+    */
 }
 
 void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
@@ -296,7 +318,8 @@ void Workload::issue_comm(shared_ptr<Chakra::ETFeederNode> node) {
             if (node->runtime() != 0ul) {
                 // chakra runtimes are in microseconds and we should convert it
                 // into nanoseconds
-                runtime = node->runtime() * 1000;
+                // -> changed chakra to return nanoseconds
+                runtime = node->runtime(); // * 1000;
             }
             DataSet* fp = new DataSet(1);
             fp->set_notifier(this, EventType::CollectiveCommunicationFinished);
@@ -407,10 +430,39 @@ void Workload::call(EventType event, CallData* data) {
         (hw_resource->num_in_flight_cpu_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comm_ops == 0)) {
-        report();
+        // report();
         sys->comm_NI->sim_notify_finished();
         is_finished = true;
     }
+}
+
+void Workload::addWorkload(string new_filename) {
+    string workload_filename = new_filename + "." + to_string(sys->id) + ".et";
+    // cout << workload_filename << endl;
+  
+    // Check if workload filename exists
+    if (access(workload_filename.c_str(), R_OK) < 0) {
+        string error_msg;
+        if (errno == ENOENT) {
+            error_msg = "workload file: " + workload_filename + " does not exist";
+        } else if (errno == EACCES) {
+            error_msg = "workload file: " + workload_filename + " exists but is not readable";
+        } else {
+            error_msg = "Unknown workload file: " + workload_filename + " access error";
+        }
+        // now more new workloads
+        LoggerFactory::get_logger("workload")->critical(error_msg);
+        return;
+    }
+  
+    // there exists new workload, change the ETFeeder
+    if (this->et_feeder != nullptr)
+      delete this->et_feeder;
+    this->et_feeder = new ETFeeder(workload_filename);
+    iteration++;
+    is_finished = false;
+    // fire next iteration
+    fire();
 }
 
 void Workload::fire() {
@@ -420,6 +472,6 @@ void Workload::fire() {
 void Workload::report() {
     Tick curr_tick = Sys::boostedTick();
     LoggerFactory::get_logger("workload")
-        ->info("sys[{}] finished, {} cycles, exposed communication {} cycles.",
-               sys->id, curr_tick, curr_tick - hw_resource->tics_gpu_ops);
+        ->info("sys[{}] iteration {} finished, {} cycles, exposed communication {} cycles.",
+               sys->id, iteration, curr_tick, curr_tick - hw_resource->tics_gpu_ops);
 }

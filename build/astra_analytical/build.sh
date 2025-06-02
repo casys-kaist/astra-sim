@@ -132,6 +132,7 @@ if [[ ${should_clean:?} == true ]]; then
   cleanup
 else
   # setup ASTRA-sim build
+  cleanup
   setup
   compile_chakra_et
 
