@@ -16,7 +16,7 @@
 [submodule "extern/graph_frontend/chakra"]
 	path = extern/graph_frontend/chakra
 	url = https://github.com/casys-kaist/chakra.git
-	branch = multi-instance
+	branch = moe-support
 [submodule "extern/network_backend/analytical"]
 	path = extern/network_backend/analytical
 	url = https://github.com/casys-kaist/astra-network-analytical.git
