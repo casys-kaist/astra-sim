@@ -16,6 +16,11 @@ build/astra_garnet/build/
 build/astra_garnet/result/
 build/astra_htsim/build/
 
+# Generated trace files
+inputs/trace/*
+!inputs/trace/examples/
+!inputs/trace/examples/**
+
 # Generated Chakra ET files
 *.eg
 *.et

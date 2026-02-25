@@ -11,6 +11,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/RecvPacketEventHandlerData.hh"
 #include "astra-sim/system/SendPacketEventHandlerData.hh"
 #include "astra-sim/system/WorkloadLayerHandlerData.hh"
+#include "astra-sim/system/AstraMemoryAPI.hh"
 #include <json/json.hpp>
 
 #include <iostream>
@@ -21,6 +22,7 @@ using namespace std;
 using namespace AstraSim;
 using namespace Chakra;
 using json = nlohmann::json;
+using AstraSim::MemoryLocationType; 
 
 typedef ChakraProtoMsg::NodeType ChakraNodeType;
 typedef ChakraProtoMsg::CollectiveCommType ChakraCollectiveCommType;
@@ -45,15 +47,13 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     }
     this->et_feeder = new ETFeeder(workload_filename);
     this->comm_group = nullptr;
-    // TODO: parametrize the number of available hardware resources
-    // Workload is in each system(NPU)
-    // We can handle LOCAL memory with this hw_resource
     this->hw_resource = new HardwareResource(1);
     this->sys = sys;
     initialize_comm_group(comm_group_filename);
     this->is_finished = false;
     this->iteration = 0;
     this->filename = et_filename;
+    this->is_sleep = false;
 }
 
 Workload::~Workload() {
@@ -127,7 +127,8 @@ void Workload::issue(shared_ptr<Chakra::ETFeederNode> node) {
         issue_replay(node);
     } else {
         if ((node->type() == ChakraNodeType::MEM_LOAD_NODE) ||
-            (node->type() == ChakraNodeType::MEM_STORE_NODE)) {
+            (node->type() == ChakraNodeType::MEM_STORE_NODE) ||
+            (node->type() == ChakraNodeType::PIM_COMP_NODE)) {
             if (sys->trace_enabled) {
                 logger->debug("issue,sys->id={}, tick={}, node->id={}, "
                               "node->name={}, node->type={}",
@@ -135,7 +136,7 @@ void Workload::issue(shared_ptr<Chakra::ETFeederNode> node) {
                               node->name(),
                               static_cast<uint64_t>(node->type()));
             }
-            issue_remote_mem(node);
+            issue_mem(node);
         } else if (node->is_cpu_op() ||
                    (!node->is_cpu_op() &&
                     node->type() == ChakraNodeType::COMP_NODE)) {
@@ -189,31 +190,56 @@ void Workload::issue_replay(shared_ptr<Chakra::ETFeederNode> node) {
     sys->register_event(this, EventType::General, wlhd, runtime);
 }
 
-void Workload::issue_remote_mem(shared_ptr<Chakra::ETFeederNode> node) {
+/* 
+    Now the node only stores one tensor_size for MEM_LOAD/STORE
+    Can get tensor size using
+    - node->tensor_size()
+    Loading/storing of the input/output is hardcoded in chakra
+    But, still can get input types from the node name
+    - node->name().find("INPUT") != string::npos
+    - node->name().find("OUTPUT") != string::npos
+    - node->name().find("WEIGHT") != string::npos
+    
+    For the tensor location use tensor_loc()
+    - node->tensor_loc() 
+    INVALID_MEMORY = 0, LOCAL_MEMORY = 1, REMOTE_MEMORY = 2, CXL_MEMORY = 3 STORAGE_MEMORY = 4
+*/
+void Workload::issue_mem(shared_ptr<Chakra::ETFeederNode> node) {
     hw_resource->occupy(node);
 
     WorkloadLayerHandlerData* wlhd = new WorkloadLayerHandlerData;
     wlhd->sys_id = sys->id;
     wlhd->workload = this;
     wlhd->node_id = node->id();
-    sys->remote_mem->issue(node->tensor_size(), wlhd);
-
-    /* 
-        Now the node only stores one tensor_size for MEM_LOAD/STORE
-        Can get tensor size using
-        - node->tensor_size()
-        Loading/storing of the input/output is hardcoded in chakra
-        But, still can get input types from the node name
-        - node->name().find("INPUT") != string::npos
-        - node->name().find("OUTPUT") != string::npos
-        - node->name().find("WEIGHT") != string::npos
-        
-        For the tensor location use tensor_loc()
-        - node->tensor_loc() 
-        Current astra-sim is does not support various memory types
-        But still implemented in chakra as below for future
-        INVALID_MEMORY = 0, LOCAL_MEMORY = 1, REMOTE_MEMORY = 2, STORAGE_MEMORY = 3
-    */
+    wlhd->device_id = node->tensor_device();
+    if (node->type() == ChakraNodeType::PIM_COMP_NODE) { // pim implementation
+        wlhd->pim_enabled = true;
+        wlhd->pim_channel_id = node->tensor_channel();
+        wlhd->pim_runtime = node->runtime();
+    }
+    switch (static_cast<MemoryLocationType>(node->tensor_loc())) {
+        case MemoryLocationType::LOCAL_MEMORY:
+            // local memory access
+            sys->local_mem->issue(node->tensor_size(), wlhd);
+            break;
+        case MemoryLocationType::REMOTE_MEMORY:
+            // remote memory access
+            sys->remote_mem->issue(node->tensor_size(), wlhd);
+            break;
+        case MemoryLocationType::CXL_MEMORY:
+            // CXL memory access
+            sys->cxl_mem->issue(node->tensor_size(), wlhd);
+            break;
+        case MemoryLocationType::STORAGE_MEMORY:
+            // storage memory access
+            sys->storage_mem->issue(node->tensor_size(), wlhd);
+            break;
+        case MemoryLocationType::INVALID_MEMORY:
+        default:
+            // invalid memory access
+            LoggerFactory::get_logger("workload")->critical("Invalid memory type");
+            exit(EXIT_FAILURE);
+    }
 }
 
 void Workload::issue_comp(shared_ptr<Chakra::ETFeederNode> node) {
@@ -429,14 +455,66 @@ void Workload::call(EventType event, CallData* data) {
     if (!et_feeder->hasNodesToIssue() &&
         (hw_resource->num_in_flight_cpu_ops == 0) &&
         (hw_resource->num_in_flight_gpu_comp_ops == 0) &&
-        (hw_resource->num_in_flight_gpu_comm_ops == 0)) {
+        (hw_resource->num_in_flight_gpu_comm_ops == 0) ) {
         // report();
-        sys->comm_NI->sim_notify_finished();
-        is_finished = true;
+        if (!pending_workloads.empty()) {
+            string next_workload = pending_workloads.front();
+            pending_workloads.pop();
+            // there exists new workload, change the ETFeeder
+            if (this->et_feeder != nullptr)
+                delete this->et_feeder;
+            this->et_feeder = new ETFeeder(next_workload);
+            iteration++;
+            is_finished = false;
+            // fire next iteration
+            fire();
+        } else {
+            // wait for the new workload command
+            // should be fired by parent controller
+            sys->comm_NI->sim_notify_finished();
+            is_finished = true;
+        }
     }
 }
 
-void Workload::addWorkload(string new_filename) {
+void Workload::add_workload(const std::string& new_filename,
+                            const std::vector<Sys*>& systems) {
+
+    // add new workload filename to pending workloads in managed systems
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr) {
+            LoggerFactory::get_logger("workload")
+                ->critical("Null system or workload while adding workload {}", new_filename);
+        }
+        string workload_filename = new_filename + "." + to_string(managed_sys->id) + ".et";
+        // Check if workload filename exists
+        if (access(workload_filename.c_str(), R_OK) < 0) {
+            string error_msg;
+            if (errno == ENOENT) {
+                error_msg = "workload file: " + workload_filename + " does not exist";
+            } else if (errno == EACCES) {
+                error_msg = "workload file: " + workload_filename + " exists but is not readable";
+            } else {
+                error_msg = "Unknown workload file: " + workload_filename + " access error";
+            }
+            LoggerFactory::get_logger("workload")->critical(error_msg);
+            return;
+        }
+        if (managed_sys->workload->is_finished && managed_sys->workload->pending_workloads.empty()) {
+            // if the workload is finished, we can directly change the ETFeeder
+            if (managed_sys->workload->et_feeder != nullptr)
+                delete managed_sys->workload->et_feeder;
+            managed_sys->workload->et_feeder = new ETFeeder(workload_filename);
+            managed_sys->workload->iteration++;
+            managed_sys->workload->is_finished = false;
+            // fire next iteration
+            managed_sys->workload->fire();
+            continue;
+        }
+        else{
+            managed_sys->workload->pending_workloads.push(workload_filename);
+        }
+    }
     string workload_filename = new_filename + "." + to_string(sys->id) + ".et";
     // cout << workload_filename << endl;
   
@@ -450,7 +528,6 @@ void Workload::addWorkload(string new_filename) {
         } else {
             error_msg = "Unknown workload file: " + workload_filename + " access error";
         }
-        // now more new workloads
         LoggerFactory::get_logger("workload")->critical(error_msg);
         return;
     }
@@ -463,6 +540,21 @@ void Workload::addWorkload(string new_filename) {
     is_finished = false;
     // fire next iteration
     fire();
+}
+
+void Workload::sleep_workload(const std::vector<Sys*>& systems) {
+
+    // add new workload filename to pending workloads in managed systems
+    for (auto* managed_sys : systems) {
+        if (managed_sys == nullptr || managed_sys->workload == nullptr) {
+            LoggerFactory::get_logger("workload")
+                ->critical("Null system or workload while sleeping workload");
+        }
+        // make managed systems sleep
+        managed_sys->workload->is_sleep = true;
+    }
+    // sleep myself
+    is_sleep = true;
 }
 
 void Workload::fire() {

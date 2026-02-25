@@ -1,6 +1,6 @@
 #include "astra-sim/common/AstraNetworkAPI.hh"
 #include "astra-sim/system/Sys.hh"
-#include "extern/remote_memory_backend/analytical/AnalyticalRemoteMemory.hh"
+#include "extern/memory_backend/analytical/AnalyticalMemory.hh"
 #include <json/json.hpp>
 
 #include "entry.h"
@@ -18,11 +18,32 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <json/json.hpp>
 #include "astra-sim/common/Logging.hh"
 
+using namespace AstraSim;
+using namespace Analytical;
 using namespace std;
 using namespace ns3;
 using json = nlohmann::json;
+
+static std::string save_json_to_tmp(const json& j, const std::string& name) {
+  const char* dir = "tmp_mem";
+  if (::mkdir(dir, 0755) == -1) {
+    if (errno != EEXIST) {
+      std::perror("mkdir tmp_mem");
+      std::exit(1);
+    }
+  }
+  std::string path = std::string(dir) + "/" + name + ".json";
+  std::ofstream ofs(path);
+  if (!ofs) {
+    std::cerr << "Unable to write tmp file: " << path << "\n";
+    std::exit(1);
+  }
+  ofs << j.dump(2);
+  return path;
+}
 
 
 /**
@@ -49,13 +70,34 @@ class NS3BackendCompletionTracker {
                 num_unfinished_ranks_--;
             }
             if (num_unfinished_ranks_ == 0) {
+                // AstraSim::LoggerFactory::get_logger("network")
+                //     ->debug("All ranks have finished. Exiting simulation.");
+                // Simulator::Stop();
+                // Simulator::Destroy();
+                // exit(0);
+
+                // Stop astra-sim + ns3 simulation exit. Enter idle/wait mode.
                 AstraSim::LoggerFactory::get_logger("network")
-                    ->debug("All ranks have finished. Exiting simulation.");
-                //cout << "All ranks have finished. Exiting simulation.\n";
-                Simulator::Stop();
-                Simulator::Destroy();
-                exit(0);
+                ->debug("All ranks have finished. Entering idle/wait mode.");
             }
+        }
+
+        void check_all_ranks_finished() {
+            // check non exited system
+            cout << "Checking Non-Exited Systems ..." << endl;
+            if (num_unfinished_ranks_ == 0){
+                cout << "---------------------------" << endl;
+                cout << "All Request Has Been Exited" << endl;
+                cout << "---------------------------" << endl;
+            }
+            else{
+                cout << "---------------------------" << endl;
+                cout << "ERROR: Some Requests Remain" << endl;
+                cout << "---------------------------" << endl;
+            }
+            Simulator::Stop();
+            Simulator::Destroy();
+            exit(0);
         }
 
     private:
@@ -200,6 +242,7 @@ bool rendezvous_protocol = false;
 auto logical_dims = vector<int>();
 int num_npus = 1;
 auto queues_per_dim = vector<int>();
+static constexpr uint64_t idle_ticks = 100;
 
 // TODO: Migrate to yaml
 void read_logical_topo_config(string network_configuration,
@@ -241,7 +284,7 @@ void parse_args(int argc, char* argv[]) {
                  system_configuration);
     cmd.AddValue("network-configuration", "Network configuration file",
                  network_configuration);
-    cmd.AddValue("remote-memory-configuration", "Memory configuration file",
+    cmd.AddValue("memory-configuration", "Memory configuration file",
                  memory_configuration);
     cmd.AddValue("comm-group-configuration",
                  "Communicator group configuration file",
@@ -277,15 +320,65 @@ int main(int argc, char* argv[]) {
     // Setup network & System layer.
     vector<ASTRASimNetwork*> networks(num_npus, nullptr);
     vector<AstraSim::Sys*> systems(num_npus, nullptr);
-    Analytical::AnalyticalRemoteMemory* mem =
-        new Analytical::AnalyticalRemoteMemory(memory_configuration);
+    json mem_json;
+    std::ifstream rm_ifs(memory_configuration);
+    rm_ifs >> mem_json;
+
+    std::vector<std::unique_ptr<AnalyticalMemory>> memory_levels;
+
+    // Check if the configuration is for a single memory type
+    const bool is_single =
+      mem_json.is_object() &&
+      mem_json.contains("memory-type") &&
+      mem_json.contains("mem-latency") &&
+      mem_json.contains("mem-bw");
+    
+    if (is_single) {
+      std::cout << "Single Memory Configuration Detected" << std::endl;
+      memory_levels.push_back(std::make_unique<AnalyticalMemory>(memory_configuration));
+    } else {
+      // local memory
+      if (mem_json.contains("local_mem") && mem_json["local_mem"].is_object()) {
+        json j = mem_json["local_mem"];
+        j["memory-location"] = "LOCAL_MEMORY";
+        auto path = save_json_to_tmp(j, "local_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      // remote memory
+      if (mem_json.contains("remote_mem") && mem_json["remote_mem"].is_object()) {
+        json j = mem_json["remote_mem"];
+        j["memory-location"] = "REMOTE_MEMORY";
+        auto path = save_json_to_tmp(j, "remote_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      // cxl memory
+      if (mem_json.contains("cxl_mem") && mem_json["cxl_mem"].is_object()) {
+        json j = mem_json["cxl_mem"];
+        j["memory-location"] = "CXL_MEMORY";
+        auto path = save_json_to_tmp(j, "cxl_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      ::rmdir("tmp_mem");
+    }
+
+    auto memory_apis = std::vector<AstraMemoryAPI*>();
+    for (auto& mem_api : memory_levels) {
+      memory_apis.push_back(mem_api.get());
+    }
+
     NS3BackendCompletionTracker* completion_tracker = new NS3BackendCompletionTracker(num_npus);
 
     for (int npu_id = 0; npu_id < num_npus; npu_id++) {
         networks[npu_id] = new ASTRASimNetwork(npu_id, completion_tracker);
         systems[npu_id] = new AstraSim::Sys(
             npu_id, workload_configuration, comm_group_configuration,
-            system_configuration, mem, networks[npu_id], logical_dims,
+            system_configuration, memory_apis, networks[npu_id], logical_dims,
             queues_per_dim, injection_scale, comm_scale, rendezvous_protocol);
     }
 
@@ -301,6 +394,34 @@ int main(int argc, char* argv[]) {
     }
 
     // Run the simulation by triggering the ns3 event queue.
-    Simulator::Run();
+    // Simulator::Run();
+    Simulator::PreRun();
+    bool exit = false;
+    while (!exit) {
+        if(Simulator::IsFinished()){
+            Simulator::Schedule(NanoSeconds(idle_ticks), [] {});
+        }
+        Simulator::RunOneEvent();
+        for (int i = 0; i < num_npus; i++) {
+            if(systems[i]->workload->is_finished){
+                systems[i]->workload->report();
+                AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+                string new_filename;
+                getline(cin, new_filename);
+                if (new_filename.compare("pass") == 0){ // if pass
+                    continue;
+                }
+                else if (new_filename.compare("exit") == 0){ // exit the simulator
+                    exit = true;
+                    break;
+                }
+                else{ // add new worklaod
+                    // cout << "Adding " << new_filename << endl;
+                    systems[i]->workload->addWorkload(new_filename);
+                }
+            }
+        }
+    }
+    completion_tracker->check_all_ranks_finished();
     return 0;
 }

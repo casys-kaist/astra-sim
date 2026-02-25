@@ -30,6 +30,7 @@ HardwareResource::HardwareResource(uint32_t num_npus)
     cpu_ops_node = NULL;
     gpu_ops_node = NULL;
     gpu_comms_node = NULL;
+
 }
 
 void HardwareResource::occupy(const shared_ptr<Chakra::ETFeederNode> node) {
@@ -44,7 +45,12 @@ void HardwareResource::occupy(const shared_ptr<Chakra::ETFeederNode> node) {
             ++num_gpu_ops;
             gpu_ops_node = node;
         } else {
-            if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
+            if (node->type() == ChakraNodeType::COMM_RECV_NODE){
+                return;
+            }
+            else if (node->type() == ChakraNodeType::MEM_LOAD_NODE ||
+                     node->type() == ChakraNodeType::MEM_STORE_NODE ||
+                     node->type() == ChakraNodeType::PIM_COMP_NODE) {
                 return;
             }
             assert(num_in_flight_gpu_comm_ops == 0);
@@ -64,7 +70,11 @@ void HardwareResource::release(const shared_ptr<Chakra::ETFeederNode> node) {
             --num_in_flight_gpu_comp_ops;
             assert(num_in_flight_gpu_comp_ops == 0);
         } else {
-            if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
+            if (node->type() == ChakraNodeType::COMM_RECV_NODE){
+                return;
+            } else if (node->type() == ChakraNodeType::MEM_LOAD_NODE ||
+                       node->type() == ChakraNodeType::MEM_STORE_NODE ||
+                       node->type() == ChakraNodeType::PIM_COMP_NODE) {
                 return;
             }
             --num_in_flight_gpu_comm_ops;
@@ -92,9 +102,13 @@ bool HardwareResource::is_available(
             if (num_in_flight_gpu_comm_ops == 0) {
                 return true;
             } else {
-                if (node->type() == ChakraNodeType::COMM_RECV_NODE) {
-                    return true;
-                }
+            if (node->type() == ChakraNodeType::COMM_RECV_NODE ||
+                node->type() == ChakraNodeType::MEM_LOAD_NODE ||
+                node->type() == ChakraNodeType::MEM_STORE_NODE ||
+                node->type() == ChakraNodeType::PIM_COMP_NODE) {
+                // concurerent memory access is handled in Memory Backend
+                return true;
+            }
                 if (num_in_flight_gpu_comm_ops == 0) {
                     return true;
                 }

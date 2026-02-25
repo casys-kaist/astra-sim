@@ -135,12 +135,12 @@ vector<double> Sys::SchedulerUnit::get_average_latency_per_dimension() {
     return result;
 }
 //-----------------------------------------------------------------------------
-
+// TODO: add various memory types and APIs
 Sys::Sys(int id,
          string workload_configuration,
          string comm_group_configuration,
          string system_configuration,
-         AstraRemoteMemoryAPI* remote_mem,
+         std::vector<AstraMemoryAPI*> memory_apis,
          AstraNetworkAPI* comm_NI,
          vector<int> physical_dims,
          vector<int> queues_per_dim,
@@ -161,8 +161,33 @@ Sys::Sys(int id,
     this->peak_perf = 0;
     this->roofline = nullptr;
 
-    this->remote_mem = remote_mem;
-    this->remote_mem->set_sys(id, this);
+    for (auto mem : memory_apis) {
+        auto loc = mem->get_memory_location_type();
+        if (loc == MemoryLocationType::REMOTE_MEMORY) {
+            // std::cout << "Detected REMOTE_MEMORY" << std::endl;
+            this->remote_mem = mem;
+            this->remote_mem->set_sys(id, this);
+        }
+        else if (loc == MemoryLocationType::LOCAL_MEMORY) {
+            // std::cout << "Detected LOCAL_MEMORY" << std::endl;
+            this->local_mem = mem;
+            this->local_mem->set_sys(id, this);
+        }
+        else if (loc == MemoryLocationType::CXL_MEMORY) {
+            // std::cout << "Detected CXL_MEMORY" << std::endl;
+            this->cxl_mem = mem;
+            this->cxl_mem->set_sys(id, this);
+        }
+        else if (loc == MemoryLocationType::STORAGE_MEMORY) {
+            // currently do nothing
+            this->storage_mem = mem;
+        }
+        else {
+            std::cout << "location type " << (int)loc << std::endl;
+            sys_panic("Unsupported memory location type");
+        }
+    }
+    
     this->local_mem_bw = 0;
 
     this->memBus = nullptr;

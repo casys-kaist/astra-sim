@@ -9,6 +9,7 @@ LICENSE file in the root directory of this source tree.
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <queue>
 
 #include "astra-sim/system/Callable.hh"
 #include "astra-sim/system/CommunicatorGroup.hh"
@@ -34,13 +35,15 @@ class Workload : public Callable {
     void issue_dep_free_nodes();
     void issue(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_replay(std::shared_ptr<Chakra::ETFeederNode> node);
-    void issue_remote_mem(std::shared_ptr<Chakra::ETFeederNode> node);
+    // void issue_remote_mem(std::shared_ptr<Chakra::ETFeederNode> node); integrated into issue_mem
+    void issue_mem(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comp(std::shared_ptr<Chakra::ETFeederNode> node);
     void issue_comm(std::shared_ptr<Chakra::ETFeederNode> node);
     void skip_invalid(std::shared_ptr<Chakra::ETFeederNode> node);
     void call(EventType event, CallData* data);
     void fire();
-    void addWorkload(std::string new_filename);
+    void add_workload(const std::string& new_filename, const std::vector<Sys*>& systems);
+    void sleep_workload(const std::vector<Sys*>& systems);
 
     // stats
     void report();
@@ -54,6 +57,9 @@ class Workload : public Callable {
     bool is_finished;
     uint32_t iteration;
     std::string filename;
+
+    bool is_sleep;
+    std::queue<std::string> pending_workloads;
 };
 
 }  // namespace AstraSim

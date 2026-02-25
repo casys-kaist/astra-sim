@@ -9,8 +9,9 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_unaware/Helper.h>
-#include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
-
+#include <memory_backend/analytical/AnalyticalMemory.hh>
+#include <json/json.hpp>
+#include <unistd.h>
 #include <iostream>
 
 using namespace AstraSim;
@@ -20,6 +21,26 @@ using namespace AstraSimAnalyticalCongestionUnaware;
 using namespace NetworkAnalytical;
 using namespace NetworkAnalyticalCongestionUnaware;
 using namespace std;
+using json = nlohmann::json;
+
+
+static std::string save_json_to_tmp(const json& j, const std::string& name) {
+  const char* dir = "tmp__mem";
+  if (::mkdir(dir, 0755) == -1) {
+    if (errno != EEXIST) {
+      std::perror("mkdir tmp_mem");
+      std::exit(1);
+    }
+  }
+  std::string path = std::string(dir) + "/" + name + ".json";
+  std::ofstream ofs(path);
+  if (!ofs) {
+    std::cerr << "Unable to write tmp file: " << path << "\n";
+    std::exit(1);
+  }
+  ofs << j.dump(2);
+  return path;
+}
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments
@@ -33,8 +54,8 @@ int main(int argc, char* argv[]) {
         cmd_line_parser.get<std::string>("comm-group-configuration");
     const auto system_configuration =
         cmd_line_parser.get<std::string>("system-configuration");
-    const auto remote_memory_configuration =
-        cmd_line_parser.get<std::string>("remote-memory-configuration");
+    const auto memory_configuration =
+        cmd_line_parser.get<std::string>("memory-configuration");
     const auto network_configuration =
         cmd_line_parser.get<std::string>("network-configuration");
     const auto logging_configuration =
@@ -45,6 +66,18 @@ int main(int argc, char* argv[]) {
     const auto injection_scale = cmd_line_parser.get<double>("injection-scale");
     const auto rendezvous_protocol =
         cmd_line_parser.get<bool>("rendezvous-protocol");
+    auto start_npu_ids =
+        cmd_line_parser.get<std::vector<int>>("start-npu-ids");
+    auto end_npu_ids =
+        cmd_line_parser.get<std::vector<int>>("end-npu-ids");
+
+    // clear vector if default value is used
+    if (start_npu_ids.size() == 1 && start_npu_ids[0] == -1) {
+      start_npu_ids.clear();
+    }
+    if (end_npu_ids.size() == 1 && end_npu_ids[0] == -1) {
+      end_npu_ids.clear();
+    }
 
     AstraSim::LoggerFactory::init(logging_configuration);
 
@@ -67,8 +100,59 @@ int main(int argc, char* argv[]) {
     // Create ASTRA-sim related resources
     auto network_apis =
         std::vector<std::unique_ptr<CongestionUnawareNetworkApi>>();
-    const auto memory_api =
-        std::make_unique<AnalyticalRemoteMemory>(remote_memory_configuration);
+    
+    json mem_json;
+    std::ifstream rm_ifs(memory_configuration);
+    rm_ifs >> mem_json;
+
+    std::vector<std::unique_ptr<AnalyticalMemory>> memory_levels;
+
+    // Check if the configuration is for a single memory type
+    const bool is_single =
+      mem_json.is_object() &&
+      mem_json.contains("memory-type") &&
+      mem_json.contains("mem-latency") &&
+      mem_json.contains("mem-bw");
+    
+    if (is_single) {
+      std::cout << "Single Memory Configuration Detected" << std::endl;
+      memory_levels.push_back(std::make_unique<AnalyticalMemory>(memory_configuration));
+    } else {
+      // local memory
+      if (mem_json.contains("local_mem") && mem_json["local_mem"].is_object()) {
+        json j = mem_json["local_mem"];
+        j["memory-location"] = "LOCAL_MEMORY";
+        auto path = save_json_to_tmp(j, "local_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      // remote memory
+      if (mem_json.contains("remote_mem") && mem_json["remote_mem"].is_object()) {
+        json j = mem_json["remote_mem"];
+        j["memory-location"] = "REMOTE_MEMORY";
+        auto path = save_json_to_tmp(j, "remote_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      // cxl memory
+      if (mem_json.contains("cxl_mem") && mem_json["cxl_mem"].is_object()) {
+        json j = mem_json["cxl_mem"];
+        j["memory-location"] = "CXL_MEMORY";
+        auto path = save_json_to_tmp(j, "cxl_mem");
+        memory_levels.push_back(std::make_unique<AnalyticalMemory>(path));
+        std::remove(path.c_str()); 
+      }
+
+      ::rmdir("tmp_mem");
+    }
+
+    auto memory_apis = std::vector<AstraMemoryAPI*>();
+    for (auto& mem_api : memory_levels) {
+      memory_apis.push_back(mem_api.get());
+    }
+
     auto systems = std::vector<Sys*>();
 
     auto queues_per_dim = std::vector<int>();
@@ -81,13 +165,43 @@ int main(int argc, char* argv[]) {
         auto network_api = std::make_unique<CongestionUnawareNetworkApi>(i);
         auto* const system =
             new Sys(i, workload_configuration, comm_group_configuration,
-                    system_configuration, memory_api.get(), network_api.get(),
+                    system_configuration, memory_apis, network_api.get(),
                     npus_count_per_dim, queues_per_dim, injection_scale,
                     comm_scale, rendezvous_protocol);
 
         // push back network and system
         network_apis.push_back(std::move(network_api));
         systems.push_back(system);
+    }
+
+    // Map instance NPU IDs for proper workload management
+    // Precompute the systems handled by each controller NPU
+    std::vector<std::vector<Sys*>> managed_systems(start_npu_ids.size());
+
+    for (std::size_t idx = 0; idx < start_npu_ids.size(); ++idx) {
+      int npu_id = start_npu_ids[idx];
+
+      // Determine the upper bound for this controller:
+      // - If there's a next controller, stop before it
+      // - Otherwise, go until npus_count
+      int upper_bound_id;
+      if (idx + 1 < start_npu_ids.size()) {
+        upper_bound_id = start_npu_ids[idx + 1];
+      } else {
+        upper_bound_id = npus_count;  // last controller handles until the end
+      }
+
+      // Collect systems in the range (npu_id+1 .. upper_bound_id-1)
+      for (int sid = npu_id + 1; sid < upper_bound_id; ++sid) {
+        if (sid < 0 || sid >= npus_count) {
+            AstraSim::LoggerFactory::get_logger("workload")
+                ->critical("Skipping invalid system id {} while building managed_systems", sid);
+        }
+        if (std::find(end_npu_ids.begin(), end_npu_ids.end(), sid) != end_npu_ids.end()) {
+          continue;
+        }
+        managed_systems[idx].push_back(systems[sid]);
+      }
     }
 
     // Initiate simulation
@@ -110,22 +224,71 @@ int main(int argc, char* argv[]) {
       else {
         event_queue->add_current_time();
       }
-      for (int i = 0; i < npus_count; i++) {
-        if(systems[i]->workload->is_finished){
-          systems[i]->workload->report();
+
+      for (std::size_t idx = 0; idx < end_npu_ids.size(); ++idx) {
+        int npu_id = end_npu_ids[idx];
+        cout << "Checking End NPU " << npu_id << " ..." << endl;
+        // Only proceed if the workload has finished its iteration
+        if (!systems[npu_id]->workload->is_sleep && systems[npu_id]->workload->is_finished) {
+          systems[npu_id]->workload->report();
           AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
-          string new_filename;
-          getline(cin, new_filename);
-          if (new_filename.compare("pass") == 0){ // if pass
+
+          std::string new_filename;
+          std::getline(std::cin, new_filename);
+
+          if (new_filename == "pass") {  
+            // Skip to the next npu
             continue;
-          }
-          else if (new_filename.compare("exit") == 0){ // exit the simulator
+          } 
+          else if (new_filename == "exit") {  
+            // Terminate the entire simulator
             exit = true;
             break;
+          } 
+          else if (new_filename == "done") {
+            // This instance is done. Go to sleep until exit
+            systems[npu_id]->workload->is_sleep = true;
           }
-          else{ // add new worklaod
-            // cout << "Adding " << new_filename << endl;
-            systems[i]->workload->addWorkload(new_filename);
+          else {  
+            // Add new workload to this system
+            systems[npu_id]->workload
+                ->add_workload(new_filename, {});
+          }
+        }
+      }
+      
+      if (exit) {
+        break;
+      }
+
+      for (std::size_t idx = 0; idx < start_npu_ids.size(); ++idx) {
+        int npu_id = start_npu_ids[idx];
+        // Only proceed if the workload has finished its iteration
+        cout << "Checking Managed Systems for Controller NPU " << npu_id << " ..." << endl;
+        if (!systems[npu_id]->workload->is_sleep && systems[npu_id]->workload->is_finished) {
+          systems[npu_id]->workload->report();
+          AstraSim::LoggerFactory::get_logger("workload")->info("Waiting");
+
+          std::string new_filename;
+          std::getline(std::cin, new_filename);
+
+          if (new_filename == "pass") {  
+            // Skip to the next npu
+            continue;
+          } 
+          else if (new_filename == "exit") {  
+            // Terminate the entire simulator
+            exit = true;
+            break;
+          } 
+          else if (new_filename == "done") {
+            // This instance is done. Go to sleep until exit
+            systems[npu_id]->workload->is_sleep = true;
+          }
+          else {  
+            // Add new workload to the systems handled by this npu
+            systems[npu_id]->workload
+                ->add_workload(new_filename, managed_systems[idx]);
           }
         }
       }

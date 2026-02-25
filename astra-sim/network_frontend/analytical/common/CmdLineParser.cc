@@ -22,7 +22,7 @@ void CmdLineParser::define_options() noexcept {
         "comm-group-configuration", "Communicator group configuration fi`le",
         cxxopts::value<std::string>()->default_value("empty"))(
         "system-configuration", "System configuration file",
-        cxxopts::value<std::string>())("remote-memory-configuration",
+        cxxopts::value<std::string>())("memory-configuration",
                                        "Remote memory configuration file",
                                        cxxopts::value<std::string>())(
         "network-configuration", "Network configuration file",
@@ -38,7 +38,13 @@ void CmdLineParser::define_options() noexcept {
         "injection-scale", "Injection scale",
         cxxopts::value<double>()->default_value("1"))(
         "rendezvous-protocol", "Whether to enable rendezvous protocol",
-        cxxopts::value<bool>()->default_value("false"));
+        cxxopts::value<bool>()->default_value("false"))(
+        "start-npu-ids",
+        "Start NPU id list (comma-separated)",
+        cxxopts::value<std::vector<int>>()->default_value("-1"))(
+        "end-npu-ids",
+        "End NPU id list (comma-separated)",
+        cxxopts::value<std::vector<int>>()->default_value("-1"));
 }
 
 void CmdLineParser::parse(int argc, char* argv[]) noexcept {
