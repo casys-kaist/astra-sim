@@ -12,6 +12,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/AstraMemoryAPI.hh"
 #include "astra-sim/system/Callable.hh"
 #include "astra-sim/system/CollectivePhase.hh"
+#include "astra-sim/system/CollectiveTagAllocator.hh"
 #include "astra-sim/system/CommunicatorGroup.hh"
 #include "astra-sim/system/MemBus.hh"
 #include "astra-sim/system/Roofline.hh"
@@ -313,6 +314,7 @@ class Sys : public Callable {
 
     // collective communication
     int num_streams;
+    CollectiveTagAllocator collective_tags;
     static uint8_t* dummy_data;
     std::map<std::string, LogicalTopology*> logical_topologies;
     std::vector<CollectiveImpl*> all_reduce_implementation_per_dimension;

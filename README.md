@@ -14,6 +14,19 @@ ASTRA-sim accepts Chakra Execution Traces as workload-layer inputs. For details,
 
 We appreciate your interest and support in ASTRA-sim!
 
+## LLMServingSim collective scopes
+
+In this fork, collectives described by Chakra's `involved_dim` attribute use
+independent stream-tag counters for each dimension scope. A TP-only operation
+does not advance an EP operation's sequence, so an idle DP member can omit its
+logits gather without breaking the next shared EP wave. Counters persist across
+batch graphs, overlapping scopes have distinct tags, and namespace exhaustion
+fails explicitly rather than wrapping. Source/destination ranks distinguish
+disjoint groups. Explicit communicator handling and timing models are unchanged.
+
+Rebuild this backend when updating LLMServingSim's idle-head execution contract;
+an older binary's global counter is not compatible with that omission.
+
 ## Contact Us
 For any questions about using ASTRA-sim, you can email the ASTRA-sim User Mailing List: astrasim-users@googlegroups.com
 

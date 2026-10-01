@@ -1043,6 +1043,9 @@ DataSet* Sys::generate_collective(
             int stream_id = num_streams++;
             if (communicator_group != nullptr) {
                 stream_id = communicator_group->num_streams++;
+            } else {
+                stream_id = collective_tags.next(
+                    dimensions_involved, topology->get_num_of_dimensions());
             }
             StreamBaseline* newStream =
                 new StreamBaseline(this, dataset, stream_id, vect, pri);
