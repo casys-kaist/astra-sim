@@ -43,7 +43,16 @@ is selected: message sizes, rank groups and local reduction costs are unchanged.
 Missing operations and point-to-point traffic use the common network. This is
 an effective analytical link model, not NCCL channel or grouped-launch emulation.
 
+## Expert-region trace dependencies
+
+The bundled Chakra converter preserves the dependency chain across every
+collective on an expert marker. LLMServingSim's native MoE components rely on
+that ordering between routing, dispatch, experts, combine and finalization.
+Update and reinstall the converter together with the frontend; the logical
+collectives remain analytical tasks, not a model of NCCL grouped kernel launches.
+
 ## Contact Us
+
 For any questions about using ASTRA-sim, you can email the ASTRA-sim User Mailing List: astrasim-users@googlegroups.com
 
 To join the mailing list, please fill out the following form: https://forms.gle/18KVS99SG3k9CGXm6
