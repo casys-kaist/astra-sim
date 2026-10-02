@@ -41,6 +41,8 @@ class BaseStream : public Callable, public StreamStat {
     int current_queue_id;
     CollectivePhase my_current_phase;
     ComType current_com_type;
+    // Retain the caller's collective through multidimensional RS/AG phases.
+    ComType logical_collective = ComType::None;
     Tick creation_time;
     Tick last_init;
     Sys* owner;

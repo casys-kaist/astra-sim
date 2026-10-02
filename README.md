@@ -27,6 +27,22 @@ disjoint groups. Explicit communicator handling and timing models are unchanged.
 Rebuild this backend when updating LLMServingSim's idle-head execution contract;
 an older binary's global counter is not compatible with that omission.
 
+## Logical collective links
+
+The congestion-unaware analytical frontend accepts an optional
+`collective_networks` mapping in its network YAML. Supported keys are
+`all_reduce`, `all_gather` and `reduce_scatter`; each value names another network
+YAML, resolved relative to the containing file unless absolute. Override files
+must retain the base topology and rank dimensions, and use finite positive
+bandwidths and finite nonnegative latencies. The selected operation must use
+`ring` or `oneRing` in the system configuration.
+
+Each stream retains its original collective type so AllReduce's internal
+scatter/gather phases use the AllReduce link. Only the network delay function
+is selected: message sizes, rank groups and local reduction costs are unchanged.
+Missing operations and point-to-point traffic use the common network. This is
+an effective analytical link model, not NCCL channel or grouped-launch emulation.
+
 ## Contact Us
 For any questions about using ASTRA-sim, you can email the ASTRA-sim User Mailing List: astrasim-users@googlegroups.com
 

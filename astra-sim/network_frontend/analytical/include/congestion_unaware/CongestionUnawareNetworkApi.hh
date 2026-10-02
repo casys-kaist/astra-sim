@@ -9,6 +9,7 @@ LICENSE file in the root directory of this source tree.
 #include <astra-network-analytical/common/Type.h>
 #include <astra-network-analytical/congestion_unaware/Topology.h>
 #include <vector>
+#include <map>
 
 using namespace AstraSim;
 using namespace AstraSimAnalytical;
@@ -29,6 +30,8 @@ class CongestionUnawareNetworkApi final : public CommonNetworkApi {
      * @param topology_ptr pointer to the to
      */
     static void set_topology(std::shared_ptr<Topology> topology_ptr) noexcept;
+    static void set_collective_topology(ComType collective,
+                                       std::shared_ptr<Topology> topology_ptr);
 
     /**
      * Constructor.
@@ -52,6 +55,7 @@ class CongestionUnawareNetworkApi final : public CommonNetworkApi {
   private:
     /// topology
     static std::shared_ptr<Topology> topology;
+    static std::map<ComType, std::shared_ptr<Topology>> collective_topologies;
 };
 
 }  // namespace AstraSimAnalyticalCongestionUnaware

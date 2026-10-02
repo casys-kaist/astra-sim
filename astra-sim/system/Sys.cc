@@ -1049,6 +1049,7 @@ DataSet* Sys::generate_collective(
             }
             StreamBaseline* newStream =
                 new StreamBaseline(this, dataset, stream_id, vect, pri);
+            newStream->logical_collective = collective_type;
             newStream->current_queue_id = -1;
             insert_into_ready_list(newStream);
         } else {

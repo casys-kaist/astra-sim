@@ -16,6 +16,9 @@ LICENSE file in the root directory of this source tree.
 #include <cstdlib>
 #include <iostream>
 #include <vector>
+#include <cmath>
+#include <filesystem>
+#include <stdexcept>
 
 using namespace AstraSim;
 using namespace Analytical;
@@ -99,6 +102,59 @@ int main(int argc, char* argv[]) {
     // Set up Network API
     CongestionUnawareNetworkApi::set_event_queue(event_queue);
     CongestionUnawareNetworkApi::set_topology(topology);
+
+    // Optional logical link models. Physical bytes, topology and local-memory
+    // reductions are unchanged. Operation-specific links support Ring only.
+    const auto network_yaml = YAML::LoadFile(network_configuration);
+    const auto overrides = network_yaml["collective_networks"];
+    if (overrides) {
+        if (!overrides.IsMap()) {
+            throw std::invalid_argument("collective_networks must be a map");
+        }
+        const std::map<std::string, ComType> names = {
+            {"all_reduce", ComType::All_Reduce},
+            {"all_gather", ComType::All_Gather},
+            {"reduce_scatter", ComType::Reduce_Scatter}};
+        const std::map<std::string, std::string> implementation_keys = {
+            {"all_reduce", "all-reduce-implementation"},
+            {"all_gather", "all-gather-implementation"},
+            {"reduce_scatter", "reduce-scatter-implementation"}};
+        json system_json;
+        std::ifstream system_input(system_configuration);
+        system_input >> system_json;
+        for (const auto& entry : overrides) {
+            const auto name = entry.first.as<std::string>();
+            if (!names.count(name) || !entry.second.IsScalar()) {
+                throw std::invalid_argument("Unknown collective network or invalid path");
+            }
+            for (const auto& implementation : system_json.at(implementation_keys.at(name))) {
+                if (implementation != "ring" && implementation != "oneRing") {
+                    throw std::invalid_argument("Collective link overrides require Ring");
+                }
+            }
+            auto path = std::filesystem::path(entry.second.as<std::string>());
+            if (path.is_relative()) {
+                path = std::filesystem::path(network_configuration).parent_path() / path;
+            }
+            const auto parser = NetworkParser(path.string());
+            if (parser.get_npus_counts_per_dim() != network_parser.get_npus_counts_per_dim() ||
+                parser.get_topologies_per_dim() != network_parser.get_topologies_per_dim()) {
+                throw std::invalid_argument("Collective network must retain topology and rank dimensions");
+            }
+            for (const auto bw : parser.get_bandwidths_per_dim()) {
+                if (!std::isfinite(bw) || bw <= 0) {
+                    throw std::invalid_argument("Invalid collective bandwidth");
+                }
+            }
+            for (const auto latency : parser.get_latencies_per_dim()) {
+                if (!std::isfinite(latency) || latency < 0) {
+                    throw std::invalid_argument("Invalid collective latency");
+                }
+            }
+            CongestionUnawareNetworkApi::set_collective_topology(
+                names.at(name), construct_topology(parser));
+        }
+    }
 
     // Create ASTRA-sim related resources
     auto network_apis =

@@ -25,6 +25,15 @@ struct timespec_t {
     long double time_val;
 };
 
+enum class ComType {
+    None = 0,
+    Reduce_Scatter,
+    All_Gather,
+    All_Reduce,
+    All_to_All,
+    All_Reduce_All_to_All
+};
+
 struct sim_request {
     uint32_t srcRank;
     uint32_t dstRank;
@@ -33,20 +42,12 @@ struct sim_request {
     uint64_t reqCount;
     uint32_t vnet;
     uint32_t layerNum;
+    ComType logical_collective = ComType::None;
 };
 
 class MetaData {
   public:
     timespec_t timestamp;
-};
-
-enum class ComType {
-    None = 0,
-    Reduce_Scatter,
-    All_Gather,
-    All_Reduce,
-    All_to_All,
-    All_Reduce_All_to_All
 };
 
 enum class CollectiveOptimization { Baseline = 0, LocalBWAware };
