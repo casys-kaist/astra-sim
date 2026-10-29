@@ -263,6 +263,37 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    // The tail rank is the frontend's completion signal for an instance, but
+    // it can finish before another TP rank's rank-local tail.  Keep the
+    // existing head/tail handshake and delay the tail report until every rank
+    // in its instance has completed the same workload iteration.  A managed
+    // rank may already be executing a later iteration, so is_finished alone
+    // is not sufficient.
+    std::vector<std::vector<Sys*>> completion_groups(end_npu_ids.size());
+    for (std::size_t idx = 0; idx < end_npu_ids.size(); ++idx) {
+      const int end_npu_id = end_npu_ids[idx];
+      const auto next_start =
+          std::upper_bound(start_npu_ids.begin(), start_npu_ids.end(), end_npu_id);
+      if (next_start == start_npu_ids.begin()) {
+        AstraSim::LoggerFactory::get_logger("workload")
+            ->critical("End NPU {} has no matching start NPU", end_npu_id);
+        return EXIT_FAILURE;
+      }
+
+      const int first_npu_id = *(next_start - 1);
+      const int upper_bound_id =
+          next_start == start_npu_ids.end() ? npus_count : *next_start;
+      if (end_npu_id < first_npu_id || end_npu_id >= upper_bound_id) {
+        AstraSim::LoggerFactory::get_logger("workload")
+            ->critical("End NPU {} is outside its instance range [{}, {})",
+                       end_npu_id, first_npu_id, upper_bound_id);
+        return EXIT_FAILURE;
+      }
+      for (int sid = first_npu_id; sid < upper_bound_id; ++sid) {
+        completion_groups[idx].push_back(systems[sid]);
+      }
+    }
+
     // Initiate simulation
     for (int i = 0; i < npus_count; i++) {
         systems[i]->workload->fire();
@@ -346,6 +377,14 @@ int main(int argc, char* argv[]) {
     auto clear_suppression = [&]() {
       std::fill(pass_gen.begin(), pass_gen.end(), -1);
     };
+    auto completed_iteration = [](const std::vector<Sys*>& group,
+                                  uint32_t target_iteration) {
+      return std::all_of(group.begin(), group.end(), [target_iteration](Sys* system) {
+        const auto* workload = system->workload;
+        return workload->iteration > target_iteration ||
+               (workload->iteration == target_iteration && workload->is_finished);
+      });
+    };
 
     bool exit = false;
     while (!exit) {
@@ -362,9 +401,12 @@ int main(int argc, char* argv[]) {
 
       for (std::size_t idx = 0; idx < end_npu_ids.size(); ++idx) {
         int npu_id = end_npu_ids[idx];
+        const auto target_iteration = systems[npu_id]->workload->iteration;
         // Only proceed if the workload has finished its iteration
         if (!systems[npu_id]->workload->is_sleep &&
-            systems[npu_id]->workload->is_finished && askable(npu_id)) {
+            systems[npu_id]->workload->is_finished &&
+            completed_iteration(completion_groups[idx], target_iteration) &&
+            askable(npu_id)) {
           asked_any = true;
           if (static_cast<long long>(systems[npu_id]->workload->iteration) !=
               last_reported_iter[npu_id]) {
