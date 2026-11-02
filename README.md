@@ -27,6 +27,15 @@ disjoint groups. Explicit communicator handling and timing models are unchanged.
 Rebuild this backend when updating LLMServingSim's idle-head execution contract;
 an older binary's global counter is not compatible with that omission.
 
+## LLMServingSim iteration completion
+
+LLMServingSim uses the first rank of each instance to admit work and the last
+rank to report instance completion. The analytical frontends delay that tail
+report until every rank in the instance has completed the same workload
+iteration. A managed rank already executing a later iteration counts as having
+completed the target, so pipeline overlap is preserved while an imbalanced TP
+rank can no longer be hidden by faster boundary ranks.
+
 ## Logical collective links
 
 The congestion-unaware analytical frontend accepts an optional
